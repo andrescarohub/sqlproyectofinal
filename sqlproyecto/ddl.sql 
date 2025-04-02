@@ -1,0 +1,172 @@
+-- ==================== TABLAS MAESTRAS (sin dependencias) ====================
+
+CREATE TABLE PAIS (
+    id_pais INT AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(50) NOT NULL UNIQUE
+) ENGINE=InnoDB;
+
+CREATE TABLE ESTADO_CAMPER (
+    id_estado INT AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(20) NOT NULL UNIQUE
+) ENGINE=InnoDB;
+
+CREATE TABLE NIVEL_RIESGO (
+    id_riesgo INT AUTO_INCREMENT PRIMARY KEY,
+    nivel VARCHAR(15) NOT NULL UNIQUE
+) ENGINE=InnoDB;
+
+-- ==================== JERARQUÍA GEOGRÁFICA ====================
+
+CREATE TABLE DEPARTAMENTO (
+    id_departamento INT AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(50) NOT NULL,
+    id_pais INT NOT NULL,
+    FOREIGN KEY (id_pais) REFERENCES PAIS(id_pais),
+    UNIQUE (nombre, id_pais)
+) ENGINE=InnoDB;
+
+CREATE TABLE CIUDAD (
+    id_ciudad INT AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(50) NOT NULL,
+    id_departamento INT NOT NULL,
+    FOREIGN KEY (id_departamento) REFERENCES DEPARTAMENTO(id_departamento),
+    UNIQUE (nombre, id_departamento)
+) ENGINE=InnoDB;
+
+CREATE TABLE DIRECCION (
+    id_direccion INT AUTO_INCREMENT PRIMARY KEY,
+    detalle VARCHAR(100) NOT NULL,
+    id_pais INT NOT NULL,
+    id_departamento INT NOT NULL,
+    id_ciudad INT NOT NULL,
+    FOREIGN KEY (id_pais) REFERENCES PAIS(id_pais),
+    FOREIGN KEY (id_departamento) REFERENCES DEPARTAMENTO(id_departamento),
+    FOREIGN KEY (id_ciudad) REFERENCES CIUDAD(id_ciudad)
+) ENGINE=InnoDB;
+
+-- ==================== ENTIDADES PRINCIPALES ====================
+
+CREATE TABLE ACUDIENTE (
+    id_acudiente INT AUTO_INCREMENT PRIMARY KEY,
+    nombres VARCHAR(50) NOT NULL,
+    apellidos VARCHAR(50) NOT NULL,
+    telefono_principal VARCHAR(15) NOT NULL,
+    id_direccion INT NOT NULL,
+    FOREIGN KEY (id_direccion) REFERENCES DIRECCION(id_direccion)
+) ENGINE=InnoDB;
+
+CREATE TABLE CAMPER (
+    id_camper INT AUTO_INCREMENT PRIMARY KEY,
+    nombres VARCHAR(50) NOT NULL,
+    apellidos VARCHAR(50) NOT NULL,
+    numero_identificacion VARCHAR(20) NOT NULL UNIQUE,
+    id_estado INT NOT NULL,
+    id_riesgo INT NOT NULL,
+    id_acudiente INT NOT NULL,
+    id_direccion INT NOT NULL,
+    FOREIGN KEY (id_estado) REFERENCES ESTADO_CAMPER(id_estado),
+    FOREIGN KEY (id_riesgo) REFERENCES NIVEL_RIESGO(id_riesgo),
+    FOREIGN KEY (id_acudiente) REFERENCES ACUDIENTE(id_acudiente),
+    FOREIGN KEY (id_direccion) REFERENCES DIRECCION(id_direccion)
+) ENGINE=InnoDB;
+
+CREATE TABLE TELEFONO_CAMPER (
+    id_telefono INT AUTO_INCREMENT PRIMARY KEY,
+    numero VARCHAR(15) NOT NULL,
+    tipo ENUM('Móvil', 'Fijo', 'Emergencia') NOT NULL,
+    indicativo VARCHAR(5) NOT NULL,
+    id_camper INT NOT NULL,
+    FOREIGN KEY (id_camper) REFERENCES CAMPER(id_camper),
+    UNIQUE (numero, id_camper)
+) ENGINE=InnoDB;
+
+CREATE TABLE RUTA (
+    id_ruta INT AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(50) NOT NULL UNIQUE
+) ENGINE=InnoDB;
+
+CREATE TABLE RUTA_SGBD (
+    id_sgbd INT AUTO_INCREMENT PRIMARY KEY,
+    nombre ENUM('MySQL', 'MongoDB', 'PostgreSQL', 'Oracle') NOT NULL,
+    es_principal BOOLEAN NOT NULL DEFAULT FALSE,
+    id_ruta INT NOT NULL,
+    FOREIGN KEY (id_ruta) REFERENCES RUTA(id_ruta),
+    UNIQUE (id_ruta, es_principal)
+) ENGINE=InnoDB;
+
+CREATE TABLE MODULO (
+    id_modulo INT AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(50) NOT NULL,
+    tipo ENUM('Fundamentos', 'Programación Web', 'Programación Formal', 'Bases de Datos', 'Backend') NOT NULL,
+    id_ruta INT NOT NULL,
+    FOREIGN KEY (id_ruta) REFERENCES RUTA(id_ruta),
+    UNIQUE (nombre, id_ruta)
+) ENGINE=InnoDB;
+
+CREATE TABLE TRAINER (
+    id_trainer INT AUTO_INCREMENT PRIMARY KEY,
+    nombres VARCHAR(50) NOT NULL,
+    apellidos VARCHAR(50) NOT NULL,
+    especialidad VARCHAR(30) NOT NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE AREA_ENTRENAMIENTO (
+    id_area INT AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(50) NOT NULL UNIQUE,
+    capacidad_maxima INT NOT NULL DEFAULT 30 CHECK (capacidad_maxima > 0)
+) ENGINE=InnoDB;
+
+-- ==================== TABLAS DE RELACIONES ====================
+
+CREATE TABLE INSCRIPCION (
+    id_inscripcion INT AUTO_INCREMENT PRIMARY KEY,
+    fecha_inscripcion DATE NOT NULL DEFAULT (CURRENT_DATE),
+    id_camper INT NOT NULL,
+    id_ruta INT NOT NULL,
+    FOREIGN KEY (id_camper) REFERENCES CAMPER(id_camper),
+    FOREIGN KEY (id_ruta) REFERENCES RUTA(id_ruta),
+    UNIQUE (id_camper, id_ruta)
+) ENGINE=InnoDB;
+
+CREATE TABLE EVALUACION (
+    id_evaluacion INT AUTO_INCREMENT PRIMARY KEY,
+    nota_teorica DECIMAL(5,2) NOT NULL CHECK (nota_teorica BETWEEN 0 AND 100),
+    nota_practica DECIMAL(5,2) NOT NULL CHECK (nota_practica BETWEEN 0 AND 100),
+    nota_quizzes DECIMAL(5,2) NOT NULL CHECK (nota_quizzes BETWEEN 0 AND 100),
+    nota_final DECIMAL(5,2) GENERATED ALWAYS AS (nota_teorica*0.3 + nota_practica*0.6 + nota_quizzes*0.1) STORED,
+    aprobado BOOLEAN GENERATED ALWAYS AS (nota_final >= 60) STORED,
+    id_modulo INT NOT NULL,
+    id_camper INT NOT NULL,
+    FOREIGN KEY (id_modulo) REFERENCES MODULO(id_modulo),
+    FOREIGN KEY (id_camper) REFERENCES CAMPER(id_camper),
+    UNIQUE (id_modulo, id_camper)
+) ENGINE=InnoDB;
+
+CREATE TABLE RUTA_TRAINER (
+    id_ruta_trainer INT AUTO_INCREMENT PRIMARY KEY,
+    fecha_asignacion DATE NOT NULL DEFAULT (CURRENT_DATE),
+    id_ruta INT NOT NULL,
+    id_trainer INT NOT NULL,
+    FOREIGN KEY (id_ruta) REFERENCES RUTA(id_ruta),
+    FOREIGN KEY (id_trainer) REFERENCES TRAINER(id_trainer),
+    UNIQUE (id_ruta, id_trainer)
+) ENGINE=InnoDB;
+
+CREATE TABLE ASIGNACION_AREA (
+    id_asignacion INT AUTO_INCREMENT PRIMARY KEY,
+    hora_inicio TIME NOT NULL,
+    hora_fin TIME NOT NULL,
+    id_trainer INT NOT NULL,
+    id_area INT NOT NULL,
+    FOREIGN KEY (id_trainer) REFERENCES TRAINER(id_trainer),
+    FOREIGN KEY (id_area) REFERENCES AREA_ENTRENAMIENTO(id_area),
+    CHECK (hora_inicio < hora_fin)
+) ENGINE=InnoDB;
+
+-- ==================== ÍNDICES ADICIONALES ====================
+
+CREATE INDEX idx_camper_estado ON CAMPER(id_estado);
+CREATE INDEX idx_camper_riesgo ON CAMPER(id_riesgo);
+CREATE INDEX idx_evaluacion_modulo ON EVALUACION(id_modulo);
+CREATE INDEX idx_evaluacion_camper ON EVALUACION(id_camper);
+CREATE INDEX idx_inscripcion_ruta ON INSCRIPCION(id_ruta);

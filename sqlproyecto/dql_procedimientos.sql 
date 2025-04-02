@@ -1,0 +1,406 @@
+-- 1. Registrar nuevo camper
+DELIMITER //
+CREATE PROCEDURE sp_registrar_camper(
+    IN p_nombres VARCHAR(50),
+    IN p_apellidos VARCHAR(50),
+    IN p_numero_identificacion VARCHAR(20),
+    IN p_id_direccion INT,
+    IN p_id_acudiente INT
+)
+BEGIN
+    DECLARE v_id_estado INT;
+    
+    -- Obtener ID del estado "En proceso"
+    SELECT id_estado INTO v_id_estado FROM ESTADO_CAMPER WHERE nombre = 'En proceso';
+    
+    -- Insertar nuevo camper
+    INSERT INTO CAMPER (nombres, apellidos, numero_identificacion, id_estado, id_riesgo, id_acudiente, id_direccion)
+    VALUES (p_nombres, p_apellidos, p_numero_identificacion, v_id_estado, 3, p_id_acudiente, p_id_direccion);
+    
+    SELECT LAST_INSERT_ID() AS id_camper;
+END //
+DELIMITER ;
+
+-- 2. Actualizar estado de camper
+DELIMITER //
+CREATE PROCEDURE sp_actualizar_estado_camper(
+    IN p_id_camper INT,
+    IN p_nuevo_estado VARCHAR(20)
+)
+BEGIN
+    DECLARE v_id_estado INT;
+    
+    -- Validar que el camper existe
+    IF NOT EXISTS (SELECT 1 FROM CAMPER WHERE id_camper = p_id_camper) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El camper no existe';
+    END IF;
+    
+    -- Obtener ID del nuevo estado
+    SELECT id_estado INTO v_id_estado FROM ESTADO_CAMPER WHERE nombre = p_nuevo_estado;
+    
+    IF v_id_estado IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Estado no válido';
+    END IF;
+    
+    -- Actualizar estado
+    UPDATE CAMPER SET id_estado = v_id_estado WHERE id_camper = p_id_camper;
+    
+    SELECT 'Estado actualizado correctamente' AS mensaje;
+END //
+DELIMITER ;
+
+-- 3. Procesar inscripción a ruta
+DELIMITER //
+CREATE PROCEDURE sp_inscribir_camper_ruta(
+    IN p_id_camper INT,
+    IN p_id_ruta INT
+)
+BEGIN
+    DECLARE v_estado_actual VARCHAR(20);
+    
+    -- Verificar que el camper existe y está en estado válido
+    SELECT ec.nombre INTO v_estado_actual
+    FROM CAMPER c
+    JOIN ESTADO_CAMPER ec ON c.id_estado = ec.id_estado
+    WHERE c.id_camper = p_id_camper;
+    
+    IF v_estado_actual IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El camper no existe';
+    END IF;
+    
+    IF v_estado_actual NOT IN ('Aprobado', 'En proceso') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El camper no puede ser inscrito en su estado actual';
+    END IF;
+    
+    -- Verificar que la ruta existe
+    IF NOT EXISTS (SELECT 1 FROM RUTA WHERE id_ruta = p_id_ruta) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La ruta no existe';
+    END IF;
+    
+    -- Verificar que no está ya inscrito
+    IF EXISTS (SELECT 1 FROM INSCRIPCION WHERE id_camper = p_id_camper AND id_ruta = p_id_ruta) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El camper ya está inscrito en esta ruta';
+    END IF;
+    
+    -- Registrar inscripción
+    INSERT INTO INSCRIPCION (fecha_inscripcion, id_camper, id_ruta)
+    VALUES (CURDATE(), p_id_camper, p_id_ruta);
+    
+    -- Actualizar estado a "Inscrito"
+    CALL sp_actualizar_estado_camper(p_id_camper, 'Inscrito');
+    
+    SELECT 'Inscripción realizada correctamente' AS mensaje;
+END //
+DELIMITER ;
+
+-- 4. Registrar evaluación completa
+DELIMITER //
+CREATE PROCEDURE sp_registrar_evaluacion(
+    IN p_id_camper INT,
+    IN p_id_modulo INT,
+    IN p_nota_teorica DECIMAL(5,2),
+    IN p_nota_practica DECIMAL(5,2),
+    IN p_nota_quizzes DECIMAL(5,2)
+)
+BEGIN
+    -- Validar que el camper existe y está cursando
+    IF NOT EXISTS (
+        SELECT 1 FROM CAMPER c
+        JOIN ESTADO_CAMPER ec ON c.id_estado = ec.id_estado
+        WHERE c.id_camper = p_id_camper AND ec.nombre = 'Cursando'
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El camper no está en estado válido para evaluaciones';
+    END IF;
+    
+    -- Validar que el módulo existe
+    IF NOT EXISTS (SELECT 1 FROM MODULO WHERE id_modulo = p_id_modulo) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El módulo no existe';
+    END IF;
+    
+    -- Validar rangos de notas
+    IF p_nota_teorica < 0 OR p_nota_teorica > 100 OR
+       p_nota_practica < 0 OR p_nota_practica > 100 OR
+       p_nota_quizzes < 0 OR p_nota_quizzes > 100 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Las notas deben estar entre 0 y 100';
+    END IF;
+    
+    -- Insertar evaluación (las columnas calculadas se generan automáticamente)
+    INSERT INTO EVALUACION (nota_teorica, nota_practica, nota_quizzes, id_modulo, id_camper)
+    VALUES (p_nota_teorica, p_nota_practica, p_nota_quizzes, p_id_modulo, p_id_camper);
+    
+    SELECT 'Evaluación registrada correctamente' AS mensaje;
+END //
+DELIMITER ;
+
+-- 5. Calcular nota final de módulo (redundante, ya se calcula automáticamente)
+DELIMITER //
+CREATE PROCEDURE sp_calcular_nota_final(
+    IN p_id_evaluacion INT
+)
+BEGIN
+    -- Este procedimiento es redundante porque la nota_final ya es una columna generada
+    SELECT 'La nota final se calcula automáticamente en la tabla' AS mensaje;
+END //
+DELIMITER ;
+
+-- 6. Asignar campers aprobados a rutas
+DELIMITER //
+CREATE PROCEDURE sp_asignar_campers_aprobados()
+BEGIN
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE v_id_camper INT;
+    DECLARE v_id_ruta INT;
+    DECLARE v_capacidad INT;
+    DECLARE v_ocupacion INT;
+    
+    -- Cursor para campers aprobados no asignados
+    DECLARE cur_campers CURSOR FOR
+        SELECT c.id_camper
+        FROM CAMPER c
+        JOIN ESTADO_CAMPER ec ON c.id_estado = ec.id_estado
+        WHERE ec.nombre = 'Aprobado'
+        AND NOT EXISTS (SELECT 1 FROM INSCRIPCION i WHERE i.id_camper = c.id_camper);
+    
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+    
+    OPEN cur_campers;
+    
+    read_loop: LOOP
+        FETCH cur_campers INTO v_id_camper;
+        IF done THEN
+            LEAVE read_loop;
+        END IF;
+        
+        -- Buscar ruta con capacidad disponible
+        rutas_loop: FOR r IN (
+            SELECT r.id_ruta, a.capacidad_maxima, 
+                   COUNT(DISTINCT i.id_camper) AS ocupacion
+            FROM RUTA r
+            JOIN AREA_ENTRENAMIENTO a ON 1=1 -- Simplificación, debería haber relación
+            LEFT JOIN INSCRIPCION i ON r.id_ruta = i.id_ruta
+            GROUP BY r.id_ruta, a.capacidad_maxima
+            HAVING COUNT(DISTINCT i.id_camper) < a.capacidad_maxima
+            LIMIT 1
+        ) DO
+            SET v_id_ruta = r.id_ruta;
+            SET v_capacidad = r.capacidad_maxima;
+            SET v_ocupacion = r.ocupacion;
+            
+            -- Asignar camper a la ruta
+            CALL sp_inscribir_camper_ruta(v_id_camper, v_id_ruta);
+            LEAVE rutas_loop;
+        END FOR;
+        
+        IF v_id_ruta IS NULL THEN
+            -- Registrar en log de error
+            INSERT INTO ERROR_LOG (mensaje) 
+            VALUES (CONCAT('No hay capacidad para asignar al camper ', v_id_camper));
+        END IF;
+    END LOOP;
+    
+    CLOSE cur_campers;
+    
+    SELECT 'Proceso de asignación completado' AS mensaje;
+END //
+DELIMITER ;
+
+-- 7. Asignar trainer a ruta y área
+DELIMITER //
+CREATE PROCEDURE sp_asignar_trainer_ruta_area(
+    IN p_id_trainer INT,
+    IN p_id_ruta INT,
+    IN p_id_area INT,
+    IN p_hora_inicio TIME,
+    IN p_hora_fin TIME
+)
+BEGIN
+    DECLARE v_hora_valida BOOLEAN;
+    
+    -- Validar que el trainer existe
+    IF NOT EXISTS (SELECT 1 FROM TRAINER WHERE id_trainer = p_id_trainer) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El trainer no existe';
+    END IF;
+    
+    -- Validar que la ruta existe
+    IF NOT EXISTS (SELECT 1 FROM RUTA WHERE id_ruta = p_id_ruta) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La ruta no existe';
+    END IF;
+    
+    -- Validar que el área existe
+    IF NOT EXISTS (SELECT 1 FROM AREA_ENTRENAMIENTO WHERE id_area = p_id_area) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El área no existe';
+    END IF;
+    
+    -- Validar horario (simplificado)
+    IF p_hora_inicio >= p_hora_fin THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El horario no es válido';
+    END IF;
+    
+    -- Verificar disponibilidad del trainer
+    IF EXISTS (
+        SELECT 1 FROM ASIGNACION_AREA 
+        WHERE id_trainer = p_id_trainer
+        AND (
+            (p_hora_inicio BETWEEN hora_inicio AND hora_fin)
+            OR (p_hora_fin BETWEEN hora_inicio AND hora_fin)
+        )
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El trainer ya tiene asignación en ese horario';
+    END IF;
+    
+    -- Verificar disponibilidad del área
+    IF EXISTS (
+        SELECT 1 FROM ASIGNACION_AREA 
+        WHERE id_area = p_id_area
+        AND (
+            (p_hora_inicio BETWEEN hora_inicio AND hora_fin)
+            OR (p_hora_fin BETWEEN hora_inicio AND hora_fin)
+        )
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El área ya está ocupada en ese horario';
+    END IF;
+    
+    -- Asignar trainer a ruta
+    INSERT INTO RUTA_TRAINER (id_ruta, id_trainer, fecha_asignacion)
+    VALUES (p_id_ruta, p_id_trainer, CURDATE());
+    
+    -- Asignar trainer a área
+    INSERT INTO ASIGNACION_AREA (id_trainer, id_area, hora_inicio, hora_fin)
+    VALUES (p_id_trainer, p_id_area, p_hora_inicio, p_hora_fin);
+    
+    SELECT 'Asignación realizada correctamente' AS mensaje;
+END //
+DELIMITER ;
+
+-- 8. Registrar nueva ruta con módulos
+DELIMITER //
+CREATE PROCEDURE sp_registrar_ruta_completa(
+    IN p_nombre_ruta VARCHAR(50),
+    IN p_sgbd_principal VARCHAR(20),
+    IN p_sgbd_alternativo VARCHAR(20),
+    IN p_modulos JSON -- Formato: [{"nombre":"Módulo 1","tipo":"Fundamentos"},...]
+)
+BEGIN
+    DECLARE v_id_ruta INT;
+    DECLARE i INT DEFAULT 0;
+    DECLARE v_modulo_count INT;
+    DECLARE v_nombre_modulo VARCHAR(50);
+    DECLARE v_tipo_modulo VARCHAR(30);
+    
+    -- Insertar nueva ruta
+    INSERT INTO RUTA (nombre) VALUES (p_nombre_ruta);
+    SET v_id_ruta = LAST_INSERT_ID();
+    
+    -- Registrar SGBDs
+    INSERT INTO RUTA_SGBD (nombre, es_principal, id_ruta)
+    VALUES (p_sgbd_principal, TRUE, v_id_ruta),
+           (p_sgbd_alternativo, FALSE, v_id_ruta);
+    
+    -- Procesar módulos
+    SET v_modulo_count = JSON_LENGTH(p_modulos);
+    
+    WHILE i < v_modulo_count DO
+        SET v_nombre_modulo = JSON_UNQUOTE(JSON_EXTRACT(p_modulos, CONCAT('$[', i, '].nombre')));
+        SET v_tipo_modulo = JSON_UNQUOTE(JSON_EXTRACT(p_modulos, CONCAT('$[', i, '].tipo')));
+        
+        -- Insertar módulo
+        INSERT INTO MODULO (nombre, tipo, id_ruta)
+        VALUES (v_nombre_modulo, v_tipo_modulo, v_id_ruta);
+        
+        SET i = i + 1;
+    END WHILE;
+    
+    SELECT CONCAT('Ruta ', p_nombre_ruta, ' registrada con ', v_modulo_count, ' módulos') AS mensaje;
+END //
+DELIMITER ;
+
+-- 9. Registrar nueva área de entrenamiento
+DELIMITER //
+CREATE PROCEDURE sp_registrar_area_entrenamiento(
+    IN p_nombre VARCHAR(50),
+    IN p_capacidad_maxima INT,
+    IN p_horarios JSON -- Formato: [{"hora_inicio":"08:00","hora_fin":"12:00"},...]
+)
+BEGIN
+    DECLARE v_id_area INT;
+    DECLARE i INT DEFAULT 0;
+    DECLARE v_horario_count INT;
+    DECLARE v_hora_inicio TIME;
+    DECLARE v_hora_fin TIME;
+    
+    -- Validar capacidad
+    IF p_capacidad_maxima <= 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'La capacidad debe ser mayor a cero';
+    END IF;
+    
+    -- Insertar nueva área
+    INSERT INTO AREA_ENTRENAMIENTO (nombre, capacidad_maxima)
+    VALUES (p_nombre, p_capacidad_maxima);
+    
+    SET v_id_area = LAST_INSERT_ID();
+    
+    -- Procesar horarios (para futuras asignaciones)
+    SET v_horario_count = JSON_LENGTH(p_horarios);
+    
+    WHILE i < v_horario_count DO
+        SET v_hora_inicio = TIME(JSON_UNQUOTE(JSON_EXTRACT(p_horarios, CONCAT('$[', i, '].hora_inicio'))));
+        SET v_hora_fin = TIME(JSON_UNQUOTE(JSON_EXTRACT(p_horarios, CONCAT('$[', i, '].hora_fin'))));
+        
+        -- Validar horario
+        IF v_hora_inicio >= v_hora_fin THEN
+            INSERT INTO ERROR_LOG (mensaje) 
+            VALUES (CONCAT('Horario inválido omitido: ', v_hora_inicio, ' a ', v_hora_fin));
+        ELSE
+            -- Registrar horario disponible (tabla hipotética HORARIOS_DISPONIBLES)
+            INSERT INTO HORARIOS_DISPONIBLES (id_area, hora_inicio, hora_fin)
+            VALUES (v_id_area, v_hora_inicio, v_hora_fin);
+        END IF;
+        
+        SET i = i + 1;
+    END WHILE;
+    
+    SELECT CONCAT('Área ', p_nombre, ' registrada con capacidad para ', p_capacidad_maxima, ' campers') AS mensaje;
+END //
+DELIMITER ;
+
+-- 10. Consultar disponibilidad de área
+DELIMITER //
+CREATE PROCEDURE sp_consultar_disponibilidad_area(
+    IN p_id_area INT,
+    IN p_fecha DATE
+)
+BEGIN
+    -- Verificar que el área existe
+    IF NOT EXISTS (SELECT 1 FROM AREA_ENTRENAMIENTO WHERE id_area = p_id_area) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'El área no existe';
+    END IF;
+    
+    -- Obtener horarios ocupados
+    SELECT 
+        aa.hora_inicio, 
+        aa.hora_fin,
+        CONCAT(t.nombres, ' ', t.apellidos) AS trainer,
+        GROUP_CONCAT(r.nombre SEPARATOR ', ') AS rutas
+    FROM ASIGNACION_AREA aa
+    JOIN TRAINER t ON aa.id_trainer = t.id_trainer
+    JOIN RUTA_TRAINER rt ON t.id_trainer = rt.id_trainer
+    JOIN RUTA r ON rt.id_ruta = r.id_ruta
+    WHERE aa.id_area = p_id_area
+    GROUP BY aa.hora_inicio, aa.hora_fin, t.nombres, t.apellidos
+    ORDER BY aa.hora_inicio;
+    
+    -- Obtener horarios disponibles (de la tabla hipotética)
+    SELECT hora_inicio, hora_fin
+    FROM HORARIOS_DISPONIBLES
+    WHERE id_area = p_id_area
+    AND NOT EXISTS (
+        SELECT 1 FROM ASIGNACION_AREA aa
+        WHERE aa.id_area = p_id_area
+        AND (
+            (HORARIOS_DISPONIBLES.hora_inicio BETWEEN aa.hora_inicio AND aa.hora_fin)
+            OR (HORARIOS_DISPONIBLES.hora_fin BETWEEN aa.hora_inicio AND aa.hora_fin)
+        )
+    );
+END //
+DELIMITER ;
+
